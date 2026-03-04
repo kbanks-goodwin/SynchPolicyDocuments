@@ -1,0 +1,373 @@
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+            "Daily_3AM": {
+                "type": "Recurrence",
+                "recurrence": {
+                    "frequency": "Day",
+                    "interval": 1,
+                    "schedule": {
+                        "hours": [
+                            3
+                        ],
+                        "minutes": [
+                            0
+                        ]
+                    },
+                    "timeZone": "Eastern Standard Time"
+                }
+            }
+        },
+        "actions": {
+            "Get_PolicySyncList": {
+                "type": "ApiConnection",
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "referenceName": "sharepointonline-1"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/tables/@{encodeURIComponent(encodeURIComponent('2c29004b-4fb5-4f69-803c-36cfe20f99e0'))}/items",
+                    "queries": {
+                        "$top": 999
+                    }
+                },
+                "runAfter": {}
+            },
+            "For_each_Policy": {
+                "type": "Foreach",
+                "foreach": "@body('Get_PolicySyncList')?['value']",
+                "actions": {
+                    "Compose_DocumentID": {
+                        "type": "Compose",
+                        "inputs": "@concat('ACTIVE!', items('For_each_Policy')?['field_7'], '.1')"
+                    },
+                    "AuthToken": {
+                        "type": "ServiceProvider",
+                        "inputs": {
+                            "parameters": {
+                                "secretName": "iManageCloudAuthToken"
+                            },
+                            "serviceProviderConfiguration": {
+                                "connectionName": "keyVault",
+                                "operationId": "getSecret",
+                                "serviceProviderId": "/serviceProviders/keyVault"
+                            }
+                        },
+                        "runAfter": {
+                            "Compose_DocumentID": [
+                                "Succeeded"
+                            ]
+                        },
+                        "runtimeConfiguration": {
+                            "secureData": {
+                                "properties": [
+                                    "inputs",
+                                    "outputs"
+                                ]
+                            }
+                        }
+                    },
+                    "Get_iManage_Metadata": {
+                        "type": "Http",
+                        "inputs": {
+                            "uri": "https://logic-workflowautomation-prod-001-aafrd6a9g9dxctda.eastus2-01.azurewebsites.net:443/api/iManage-GetDocumentLatestVersion/triggers/When_an_HTTP_request_is_received/invoke?api-version=2022-05-01&sp=%2Ftriggers%2FWhen_an_HTTP_request_is_received%2Frun&sv=1.0&sig=FVuuPL1Wqc-fHCDrb4LJkH4wcW50IQRVByugGfjM4FE",
+                            "method": "POST",
+                            "headers": {
+                                "Content-Type": "application/json"
+                            },
+                            "body": {
+                                "DocumentID": "@outputs('Compose_DocumentID')",
+                                "Database": "ACTIVE",
+                                "requestor": "PolicySyncNightly"
+                            }
+                        },
+                        "runAfter": {
+                            "AuthToken": [
+                                "SUCCEEDED"
+                            ]
+                        }
+                    },
+                    "Parse_iManage": {
+                        "type": "ParseJson",
+                        "inputs": {
+                            "content": "@body('Get_iManage_Metadata')",
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "data": {
+                                        "type": "object",
+                                        "properties": {
+                                            "extension": {
+                                                "type": "string"
+                                            },
+                                            "version": {
+                                                "type": "integer"
+                                            },
+                                            "file_edit_date": {
+                                                "type": "string"
+                                            },
+                                            "name": {
+                                                "type": "string"
+                                            },
+                                            "id": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "runAfter": {
+                            "Get_iManage_Metadata": [
+                                "Succeeded"
+                            ]
+                        }
+                    },
+                    "If_FileID_Is_Empty": {
+                        "type": "If",
+                        "expression": {
+                            "or": [
+                                {
+                                    "equals": [
+                                        "@empty(items('For_each_Policy')?['FileID'])",
+                                        true
+                                    ]
+                                }
+                            ]
+                        },
+                        "actions": {
+                            "Download_File_First_Time": {
+                                "type": "Http",
+                                "inputs": {
+                                    "uri": "https://goodwin.cloudimanage.com/work/api/v2/customers/7426/libraries/ACTIVE/documents/@{body('Parse_iManage')?['data']?['id']}/download?activity=export",
+                                    "method": "GET",
+                                    "headers": {
+                                        "Accept": "*/*",
+                                        "X-Auth-Token": "@{body('AuthToken')?['value']}"
+                                    }
+                                }
+                            },
+                            "Write_File_First_Time": {
+                                "type": "ApiConnection",
+                                "inputs": {
+                                    "host": {
+                                        "connection": {
+                                            "referenceName": "sharepointonline-1"
+                                        }
+                                    },
+                                    "method": "post",
+                                    "body": "@body('Download_File_First_Time')",
+                                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/files",
+                                    "queries": {
+                                        "folderPath": "/PolicyLibrary",
+                                        "name": "@{body('Parse_iManage')?['data']?['name']}.@{body('Parse_iManage')?['data']?['extension']}"
+                                    }
+                                },
+                                "runAfter": {
+                                    "Download_File_First_Time": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            },
+                            "Update_List_LastUpdated_First": {
+                                "type": "ApiConnection",
+                                "inputs": {
+                                    "host": {
+                                        "connection": {
+                                            "referenceName": "sharepointonline-1"
+                                        }
+                                    },
+                                    "method": "patch",
+                                    "body": {
+                                        "field_4": "@item()?['field_4']",
+                                        "field_7": "@items('For_each_Policy')?['field_7']",
+                                        "field_8": "@body('Parse_iManage')?['data']?['version']",
+                                        "field_9": "https://goodwin.cloudimanage.com/work/link/d/@{body('Parse_iManage')?['data']?['id']}",
+                                        "LastUpdated": "@body('Parse_iManage')?['data']?['file_edit_date']",
+                                        "FileID": "@{body('Write_File_First_Time')?['ItemId']}"
+                                    },
+                                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/tables/@{encodeURIComponent(encodeURIComponent('2c29004b-4fb5-4f69-803c-36cfe20f99e0'))}/items/@{encodeURIComponent(items('For_each_Policy')?['ID'])}"
+                                },
+                                "runAfter": {
+                                    "New_File_Properties": [
+                                        "SUCCEEDED"
+                                    ]
+                                }
+                            },
+                            "New_File_Properties": {
+                                "type": "ApiConnection",
+                                "inputs": {
+                                    "host": {
+                                        "connection": {
+                                            "referenceName": "sharepointonline-1"
+                                        }
+                                    },
+                                    "method": "patch",
+                                    "body": {
+                                        "Title": "@body('Parse_iManage')?['data']?['name']",
+                                        "Policy_x0020_Name": "@item()?['field_4']",
+                                        "Department": "@item()?['field_0']",
+                                        "Office": "@item()?['field_2']",
+                                        "Owner": {
+                                            "Id": "@item()?['Owner']?['Id']"
+                                        },
+                                        "PolicyiManageID": "@items('For_each_Policy')?['field_7']",
+                                        "Topics": "@item()?['topics']",
+                                        "iManageLink": "https://goodwin.cloudimanage.com/work/link/d/@{body('Parse_iManage')?['data']?['id']}",
+                                        "iManageEditDate": "@body('Parse_iManage')?['data']?['file_edit_date']",
+                                        "VersionNum": "@{body('Parse_iManage')?['data']?['version']}",
+                                        "Details": "@item()?['field_1']"
+                                    },
+                                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/tables/@{encodeURIComponent(encodeURIComponent('9916a115-b674-4640-b876-dfd9adaf639e'))}/items/@{encodeURIComponent(body('Write_File_First_Time')?['ItemId'])}/patchfileitem"
+                                },
+                                "runAfter": {
+                                    "Write_File_First_Time": [
+                                        "Succeeded"
+                                    ]
+                                }
+                            }
+                        },
+                        "else": {
+                            "actions": {
+                                "If_iManage_Is_Newer": {
+                                    "type": "If",
+                                    "expression": {
+                                        "greater": [
+                                            "@body('Parse_iManage')?['data']?['file_edit_date']",
+                                            "@items('For_each_Policy')?['LastUpdated']"
+                                        ]
+                                    },
+                                    "actions": {
+                                        "Download_File_Update": {
+                                            "type": "Http",
+                                            "inputs": {
+                                                "uri": "https://goodwin.cloudimanage.com/work/api/v2/customers/7426/libraries/ACTIVE/documents/@{body('Parse_iManage')?['data']?['id']}/download?activity=export",
+                                                "method": "GET",
+                                                "headers": {
+                                                    "Accept": "*/*",
+                                                    "X-Auth-Token": "@{body('AuthToken')?['value']}"
+                                                }
+                                            }
+                                        },
+                                        "Update_List_LastUpdated_Update": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "referenceName": "sharepointonline-1"
+                                                    }
+                                                },
+                                                "method": "patch",
+                                                "body": {
+                                                    "field_4": "@item()?['field_4']",
+                                                    "field_7": "@items('For_each_Policy')?['field_7']",
+                                                    "Title": "@body('Parse_iManage')?['data']?['name']",
+                                                    "field_8": "@body('Parse_iManage')?['data']?['version']",
+                                                    "field_9": "https://goodwin.cloudimanage.com/work/link/d/@{body('Parse_iManage')?['data']?['id']}",
+                                                    "LastUpdated": "@body('Parse_iManage')?['data']?['file_edit_date']",
+                                                    "FileID": "@item()?['FileID']"
+                                                },
+                                                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/tables/@{encodeURIComponent(encodeURIComponent('2c29004b-4fb5-4f69-803c-36cfe20f99e0'))}/items/@{encodeURIComponent(items('For_each_Policy')?['ID'])}"
+                                            },
+                                            "runAfter": {
+                                                "Update_file_properties": [
+                                                    "SUCCEEDED"
+                                                ]
+                                            }
+                                        },
+                                        "Update_file_properties": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "referenceName": "sharepointonline-1"
+                                                    }
+                                                },
+                                                "method": "patch",
+                                                "body": {
+                                                    "Title": "@{body('Parse_iManage')?['data']?['name']}.@{body('Parse_iManage')?['data']?['extension']}",
+                                                    "Policy_x0020_Name": "@item()?['field_4']",
+                                                    "Department": "@item()?['field_0']",
+                                                    "Office": "@item()?['field_2']",
+                                                    "Owner": {
+                                                        "Id": "@item()?['Owner']?['Id']"
+                                                    },
+                                                    "PolicyiManageID": "@{items('For_each_Policy')?['field_7']}",
+                                                    "Topics": "@item()?['topics']",
+                                                    "iManageLink": "https://goodwin.cloudimanage.com/work/link/d/@{body('Parse_iManage')?['data']?['id']}",
+                                                    "iManageEditDate": "@body('Parse_iManage')?['data']?['file_edit_date']",
+                                                    "VersionNum": "@{body('Parse_iManage')?['data']?['version']}",
+                                                    "Details": "@item()?['field_1']"
+                                                },
+                                                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/tables/@{encodeURIComponent(encodeURIComponent('9916a115-b674-4640-b876-dfd9adaf639e'))}/items/@{encodeURIComponent(item()?['FileID'])}/patchfileitem"
+                                            },
+                                            "runAfter": {
+                                                "Update_file": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Update_file": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "referenceName": "sharepointonline-1"
+                                                    }
+                                                },
+                                                "method": "put",
+                                                "body": "@body('Download_File_Update')",
+                                                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/files/@{encodeURIComponent(encodeURIComponent(body('Get_file_properties')?['{Identifier}']))}"
+                                            },
+                                            "runAfter": {
+                                                "Get_file_properties": [
+                                                    "SUCCEEDED"
+                                                ]
+                                            }
+                                        },
+                                        "Get_file_properties": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "referenceName": "sharepointonline-1"
+                                                    }
+                                                },
+                                                "method": "get",
+                                                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://goodwinprocterllp.sharepoint.com/sites/i-PolicyCentral'))}/tables/@{encodeURIComponent(encodeURIComponent('9916a115-b674-4640-b876-dfd9adaf639e'))}/items/@{encodeURIComponent(item()?['FileID'])}/getfileitem"
+                                            },
+                                            "runAfter": {
+                                                "Download_File_Update": [
+                                                    "SUCCEEDED"
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "else": {
+                                        "actions": {}
+                                    }
+                                }
+                            }
+                        },
+                        "runAfter": {
+                            "Parse_iManage": [
+                                "Succeeded"
+                            ]
+                        }
+                    }
+                },
+                "runAfter": {
+                    "Get_PolicySyncList": [
+                        "Succeeded"
+                    ]
+                }
+            }
+        },
+        "outputs": {}
+    },
+    "kind": "stateful"
+}
